@@ -1,15 +1,18 @@
 """Parser for gsz.gov.by website."""
 
 import asyncio
+import random
 from datetime import datetime
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 from urllib.parse import quote, urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 from config.logging_config import get_logger
+from config.settings import settings
 from parsers.base_parser import BaseParser
+from parsers.rate_limiter import RateLimiter, RequestThrottler, UserAgentRotator
 from schemas.vacancy import VacancySchema
 from utils.exceptions import ParserError
 
@@ -26,10 +29,31 @@ class GszParser(BaseParser):
             base_url="https://gsz.gov.by",
         )
         self.session: Optional[aiohttp.ClientSession] = None
+        self.user_agent_rotator = UserAgentRotator()
+        self.rate_limiter = RateLimiter(
+            min_delay=settings.parser_delay_between_requests,
+            max_delay=settings.parser_delay_between_requests * 1.5,
+            jitter=True,
+        )
+        self.request_throttler = RequestThrottler(
+            requests_per_minute=20,  # Conservative limit
+            requests_per_hour=500,  # Conservative limit
+        )
+        self._update_headers()
+
+    def _update_headers(self) -> None:
+        """Update headers with rotated User-Agent."""
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": self.user_agent_rotator.get_random(),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Cache-Control": "max-age=0",
         }
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -38,7 +62,12 @@ class GszParser(BaseParser):
             timeout = aiohttp.ClientTimeout(total=30)
             # Create connector with SSL verification disabled (for development)
             # In production, should use proper SSL certificates
-            connector = aiohttp.TCPConnector(ssl=False)
+            connector = aiohttp.TCPConnector(
+                ssl=False,
+                limit=settings.parser_max_concurrent_requests,  # Limit concurrent connections
+            )
+            # Update headers with new User-Agent
+            self._update_headers()
             self.session = aiohttp.ClientSession(
                 headers=self.headers,
                 timeout=timeout,
@@ -53,7 +82,7 @@ class GszParser(BaseParser):
 
     async def _fetch_page(self, url: str, retries: int = 3) -> Optional[str]:
         """
-        Fetch page content with retry mechanism.
+        Fetch page content with retry mechanism and rate limiting.
 
         Args:
             url: URL to fetch
@@ -62,15 +91,42 @@ class GszParser(BaseParser):
         Returns:
             HTML content or None if failed
         """
+        # Check throttler before making request
+        if not await self.request_throttler.can_make_request():
+            # Wait a bit if we're rate limited
+            await asyncio.sleep(5)
+        
+        # Wait for rate limiter
+        await self.rate_limiter.wait()
+        
         session = await self._get_session()
         for attempt in range(retries):
             try:
+                # Rotate User-Agent every few requests
+                if attempt == 0 and random.random() < 0.3:  # 30% chance to rotate
+                    self._update_headers()
+                    # Update session headers
+                    session.headers.update(self.headers)
+                
                 async with session.get(url) as response:
+                    # Record successful request
+                    await self.request_throttler.record_request()
+                    
                     if response.status == 200:
                         return await response.text()
                     elif response.status == 404:
                         self.logger.warning(f"Page not found: {url}")
                         return None
+                    elif response.status == 429:  # Too Many Requests
+                        # Rate limited - wait longer
+                        wait_time = int(response.headers.get("Retry-After", 60))
+                        self.logger.warning(
+                            f"Rate limited (429) for {url}, waiting {wait_time}s, "
+                            f"attempt {attempt + 1}/{retries}"
+                        )
+                        if attempt < retries - 1:
+                            await asyncio.sleep(wait_time)
+                        continue
                     elif response.status == 503:
                         # Service Unavailable - server is overloaded
                         self.logger.warning(
@@ -78,11 +134,22 @@ class GszParser(BaseParser):
                         )
                         # For 503, use longer backoff
                         if attempt < retries - 1:
-                            await asyncio.sleep(5 * (attempt + 1))  # 5, 10, 15 seconds
+                            wait_time = 5 * (attempt + 1) + random.uniform(0, 3)  # Add jitter
+                            await asyncio.sleep(wait_time)
+                        continue
+                    elif response.status == 403:  # Forbidden - might be IP ban
+                        self.logger.error(
+                            f"Forbidden (403) for {url} - possible IP ban, "
+                            f"attempt {attempt + 1}/{retries}"
+                        )
+                        if attempt < retries - 1:
+                            # Wait longer for 403
+                            await asyncio.sleep(30 * (attempt + 1))
                         continue
                     else:
                         self.logger.warning(
-                            f"Unexpected status {response.status} for {url}, attempt {attempt + 1}/{retries}"
+                            f"Unexpected status {response.status} for {url}, "
+                            f"attempt {attempt + 1}/{retries}"
                         )
             except asyncio.TimeoutError:
                 self.logger.warning(f"Timeout fetching {url}, attempt {attempt + 1}/{retries}")
@@ -90,7 +157,9 @@ class GszParser(BaseParser):
                 self.logger.error(f"Error fetching {url}: {e}, attempt {attempt + 1}/{retries}")
 
             if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                # Exponential backoff with jitter
+                backoff_time = (2 ** attempt) + random.uniform(0, 1)
+                await asyncio.sleep(backoff_time)
 
         return None
 
@@ -153,7 +222,7 @@ class GszParser(BaseParser):
             company_name: Company name
 
         Returns:
-            Total number of pages (default: 1)
+            Total number of pages (default: 1, but will try to parse more)
         """
         url = self.build_search_url(profession, city, company_name, page=1)
         html = await self._fetch_page(url)
@@ -162,32 +231,67 @@ class GszParser(BaseParser):
 
         try:
             soup = BeautifulSoup(html, "html.parser")
-            # Look for pagination elements
-            pagination = (
-                soup.find("div", class_="pagination")
-                or soup.find("nav", class_="pagination")
-                or soup.find("ul", class_="pagination")
-            )
+            
+            # Try multiple pagination selectors
+            pagination_selectors = [
+                ("div", {"class": "pagination"}),
+                ("nav", {"class": "pagination"}),
+                ("ul", {"class": "pagination"}),
+                ("div", {"class": "pager"}),
+                ("nav", {"class": "pager"}),
+                ("ul", {"class": "pager"}),
+                ("div", {"class": "page-numbers"}),
+            ]
+            
+            pagination = None
+            for tag, attrs in pagination_selectors:
+                pagination = soup.find(tag, attrs)
+                if pagination:
+                    break
+            
             if pagination:
                 page_links = pagination.find_all("a")
                 max_page = 1
                 for link in page_links:
                     try:
+                        # Check text content
                         page_text = link.text.strip()
                         if page_text.isdigit():
                             page_num = int(page_text)
                             max_page = max(max_page, page_num)
-                    except ValueError:
+                        
+                        # Also check href for page numbers
+                        href = link.get("href", "")
+                        if href:
+                            # Look for page= parameter
+                            import re
+                            match = re.search(r'[?&]page=(\d+)', href)
+                            if match:
+                                page_num = int(match.group(1))
+                                max_page = max(max_page, page_num)
+                    except (ValueError, AttributeError):
                         continue
-                return max_page if max_page > 1 else 1
+                
+                if max_page > 1:
+                    self.logger.info(f"Found pagination: {max_page} pages")
+                    return max_page
             
             # If no pagination found, check if there are job blocks
+            # If there are many job blocks (20 per page), likely there are more pages
             job_blocks = soup.find_all("div", class_="job-block")
             if job_blocks:
-                # If we have job blocks, there's at least 1 page
+                # If we have exactly 20 job blocks, there might be more pages
+                # Return a reasonable default (10 pages) to try parsing
+                if len(job_blocks) >= 20:
+                    self.logger.info(
+                        f"Found {len(job_blocks)} job blocks on first page, "
+                        "assuming there might be more pages"
+                    )
+                    # Return a reasonable number to try (will stop when no more results)
+                    return 10  # Try up to 10 pages, will stop earlier if no results
                 return 1
         except Exception as e:
-            self.logger.error(f"Error parsing pagination: {e}")
+            self.logger.error(f"Error parsing pagination: {e}", exc_info=True)
 
         return 1
 
@@ -387,6 +491,7 @@ class GszParser(BaseParser):
         limit: Optional[int] = None,
         fetch_details: bool = False,
         filter_by_city: bool = True,
+        progress_callback: Optional[Callable[[int, int, int], Awaitable[None]]] = None,
     ) -> list[dict]:
         """
         Parse vacancies from gsz.gov.by.
@@ -398,6 +503,9 @@ class GszParser(BaseParser):
             limit: Maximum number of vacancies to return
             fetch_details: Whether to fetch detailed contact info from detail pages.
                           Default False to avoid overwhelming the server.
+            filter_by_city: Whether to filter results by city
+            progress_callback: Optional callback function(current_page, total_pages, found_count)
+                              called after parsing each page for progress updates
 
         Returns:
             List of vacancy dictionaries
@@ -418,9 +526,17 @@ class GszParser(BaseParser):
             # Get total pages
             total_pages = await self.get_total_pages(profession, city, company_name)
             self.logger.info(f"Found {total_pages} page(s)")
+            
+            # Call progress callback for initial state
+            if progress_callback:
+                await progress_callback(0, total_pages, 0)
 
             # Parse each page
-            for page in range(1, total_pages + 1):
+            # If total_pages is estimated (e.g., 10), continue until no more results
+            max_pages_to_try = max(total_pages, 20)  # Try up to 20 pages max
+            consecutive_empty_pages = 0
+            
+            for page in range(1, max_pages_to_try + 1):
                 if limit and len(vacancies) >= limit:
                     break
 
@@ -430,15 +546,45 @@ class GszParser(BaseParser):
                 html = await self._fetch_page(url)
                 if not html:
                     self.logger.warning(f"Failed to fetch page {page}")
+                    consecutive_empty_pages += 1
+                    # Stop if 2 consecutive pages fail
+                    if consecutive_empty_pages >= 2:
+                        self.logger.info(f"Stopping after {consecutive_empty_pages} consecutive failed pages")
+                        break
                     continue
 
                 soup = BeautifulSoup(html, "html.parser")
 
                 # Find vacancy items - actual structure: div.job-block
                 vacancy_items = soup.find_all("div", class_="job-block")
+                
+                # Also try alternative selectors if job-block not found
+                if len(vacancy_items) == 0:
+                    # Try alternative selectors
+                    alt_items = soup.find_all("div", class_="vacancy-item")
+                    if not alt_items:
+                        alt_items = soup.find_all("div", class_="vacancy")
+                    if not alt_items:
+                        alt_items = soup.find_all("article", class_="vacancy")
+                    if not alt_items:
+                        alt_items = soup.find_all("div", {"data-vacancy": True})
+                    if alt_items:
+                        vacancy_items = alt_items
+                        self.logger.info(f"Found {len(vacancy_items)} items using alternative selectors")
 
-                self.logger.debug(f"Found {len(vacancy_items)} vacancy items on page {page}")
+                self.logger.info(f"Page {page}: Found {len(vacancy_items)} vacancy items")
 
+                # If no items found, increment empty pages counter
+                if len(vacancy_items) == 0:
+                    consecutive_empty_pages += 1
+                    # Stop if 2 consecutive pages have no results
+                    if consecutive_empty_pages >= 2:
+                        self.logger.info(f"Stopping after {consecutive_empty_pages} consecutive empty pages")
+                        break
+                else:
+                    consecutive_empty_pages = 0  # Reset counter on successful page
+
+                page_vacancies_count = 0
                 for item in vacancy_items:
                     if limit and len(vacancies) >= limit:
                         break
@@ -497,8 +643,10 @@ class GszParser(BaseParser):
                         
                         # Try to get contact info from detail page if enabled and URL is available
                         if fetch_details and vacancy.get("url") and detail_fetch_errors < max_detail_errors:
-                            # Add delay between detail page requests to avoid overwhelming server
-                            await asyncio.sleep(0.5)  # 500ms delay between detail requests
+                            # Wait for rate limiter before detail request
+                            await self.rate_limiter.wait()
+                            # Additional delay for detail pages (they're more expensive)
+                            await asyncio.sleep(1.0 + random.uniform(0, 0.5))  # 1-1.5s delay
                             
                             detail_data = await self.parse_vacancy_detail(vacancy["url"])
                             if detail_data:
@@ -518,10 +666,18 @@ class GszParser(BaseParser):
                                     )
                         
                         vacancies.append(vacancy)
+                        page_vacancies_count += 1
 
-                # Small delay between pages to avoid overwhelming the server
-                if page < total_pages:
-                    await asyncio.sleep(1)
+                # Call progress callback after parsing page
+                if progress_callback:
+                    await progress_callback(page, max_pages_to_try, len(vacancies))
+
+                # Delay between pages (longer than between individual requests)
+                if page < max_pages_to_try:
+                    delay = settings.parser_delay_between_pages
+                    # Add random jitter (±30%)
+                    jitter = delay * 0.3 * (random.random() * 2 - 1)
+                    await asyncio.sleep(delay + jitter)
 
             self.logger.info(f"Successfully parsed {len(vacancies)} vacancies")
             return vacancies

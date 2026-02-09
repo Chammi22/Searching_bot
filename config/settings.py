@@ -32,6 +32,17 @@ class Settings(BaseSettings):
         default=3, alias="DEFAULT_MONITORING_INTERVAL_HOURS"
     )
 
+    # Parser rate limiting (to avoid IP bans)
+    parser_delay_between_requests: float = Field(
+        default=2.0, alias="PARSER_DELAY_BETWEEN_REQUESTS"
+    )  # Seconds between requests
+    parser_delay_between_pages: float = Field(
+        default=3.0, alias="PARSER_DELAY_BETWEEN_PAGES"
+    )  # Seconds between page requests
+    parser_max_concurrent_requests: int = Field(
+        default=1, alias="PARSER_MAX_CONCURRENT_REQUESTS"
+    )  # Max concurrent requests (1 = sequential)
+
     @property
     def admin_ids_list(self) -> List[int]:
         """Parse admin IDs from comma-separated string."""

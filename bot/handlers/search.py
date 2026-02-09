@@ -1,5 +1,6 @@
 """Search command handler."""
 
+import time
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -138,6 +139,43 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Show loading message
     loading_msg = await update.message.reply_text("⏳ Ищу вакансии...")
 
+    # Progress tracking
+    last_progress_update = 0
+
+    async def update_progress(current_page: int, total_pages: int, found_count: int) -> None:
+        """Update progress message."""
+        nonlocal last_progress_update
+        
+        # Update progress every page or every 3 seconds
+        current_time = time.time()
+        if current_time - last_progress_update < 3 and current_page > 0:
+            return  # Skip if updated recently
+        
+        last_progress_update = current_time
+        
+        # Calculate progress percentage
+        if total_pages > 0:
+            progress_pct = min(int((current_page / total_pages) * 100), 100)
+        else:
+            progress_pct = 0
+        
+        # Create progress bar
+        bar_length = 10
+        filled = int(bar_length * progress_pct / 100)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        
+        progress_text = (
+            f"⏳ <b>Ищу вакансии...</b>\n\n"
+            f"📄 Страница: {current_page}/{total_pages if total_pages > 0 else '?'}\n"
+            f"📊 Найдено: {found_count} вакансий\n"
+            f"📈 Прогресс: [{bar}] {progress_pct}%"
+        )
+        
+        try:
+            await loading_msg.edit_text(progress_text, parse_mode="HTML")
+        except Exception as e:
+            logger.debug(f"Could not update progress message: {e}")
+
     try:
         # Parse vacancies using parser
         async with GszParser() as parser:
@@ -146,6 +184,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 city=city,
                 company_name=company_name,
                 limit=200,  # Increased limit for better results
+                progress_callback=update_progress,
             )
 
         if not vacancies:
@@ -155,6 +194,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parse_mode="HTML",
             )
             return
+
+        # Update final progress
+        await loading_msg.edit_text(
+            f"✅ Найдено <b>{len(vacancies)}</b> вакансий\n"
+            "💾 Сохраняю в базу данных...",
+            parse_mode="HTML",
+        )
 
         # Save vacancies to database
         db = next(get_db())
@@ -299,10 +345,48 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
         company_name = filter_obj.company_name
 
         # Show loading message
-        await query.edit_message_text(
+        loading_msg = await query.edit_message_text(
             f"⏳ Ищу вакансии по фильтру <b>\"{filter_obj.name}\"</b>...",
             parse_mode="HTML",
         )
+
+        # Progress tracking
+        last_progress_update = 0
+
+        async def update_progress(current_page: int, total_pages: int, found_count: int) -> None:
+            """Update progress message."""
+            nonlocal last_progress_update
+            
+            # Update progress every page or every 3 seconds
+            import time
+            current_time = time.time()
+            if current_time - last_progress_update < 3 and current_page > 0:
+                return  # Skip if updated recently
+            
+            last_progress_update = current_time
+            
+            # Calculate progress percentage
+            if total_pages > 0:
+                progress_pct = min(int((current_page / total_pages) * 100), 100)
+            else:
+                progress_pct = 0
+            
+            # Create progress bar
+            bar_length = 10
+            filled = int(bar_length * progress_pct / 100)
+            bar = "█" * filled + "░" * (bar_length - filled)
+            
+            progress_text = (
+                f"⏳ <b>Ищу вакансии по фильтру \"{filter_obj.name}\"...</b>\n\n"
+                f"📄 Страница: {current_page}/{total_pages if total_pages > 0 else '?'}\n"
+                f"📊 Найдено: {found_count} вакансий\n"
+                f"📈 Прогресс: [{bar}] {progress_pct}%"
+            )
+            
+            try:
+                await loading_msg.edit_text(progress_text, parse_mode="HTML")
+            except Exception as e:
+                logger.debug(f"Could not update progress message: {e}")
 
         # Parse vacancies using parser
         async with GszParser() as parser:
@@ -311,15 +395,23 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
                 city=city,
                 company_name=company_name,
                 limit=200,  # Increased limit for better results
+                progress_callback=update_progress,
             )
 
         if not vacancies:
-            await query.edit_message_text(
+            await loading_msg.edit_text(
                 f"❌ Вакансии по фильтру <b>\"{filter_obj.name}\"</b> не найдены.\n\n"
                 "Попробуйте изменить параметры фильтра или использовать другой фильтр.",
                 parse_mode="HTML",
             )
             return
+
+        # Update final progress
+        await loading_msg.edit_text(
+            f"✅ Найдено <b>{len(vacancies)}</b> вакансий\n"
+            "💾 Сохраняю в базу данных...",
+            parse_mode="HTML",
+        )
 
         # Save vacancies to database
         vacancy_repo = VacancyRepository(db)
@@ -338,7 +430,7 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data[CURRENT_PAGE_KEY] = 0
 
         # Show first result
-        await show_search_results(update, context, page=0, message=query.message)
+        await show_search_results(update, context, page=0, message=loading_msg)
 
     except Exception as e:
         logger.error(f"Error in search_filter_callback: {e}", exc_info=True)
