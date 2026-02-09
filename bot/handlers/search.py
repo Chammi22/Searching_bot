@@ -57,10 +57,26 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 city = " ".join(args_list[keyword_index + 1:])
         elif len(args_list) >= 2:
             # Format: /search профессия город
-            # Last argument is city, rest is profession
-            # This works for: "подсобный рабочий Минск" -> profession="подсобный рабочий", city="Минск"
-            profession = " ".join(args_list[:-1])
-            city = args_list[-1]
+            # Last argument might be city, but check if it's a known city name
+            # Common Belarusian cities
+            known_cities = [
+                "минск", "могилев", "гомель", "брест", "гродно", "витебск",
+                "бобруйск", "барановичи", "пинск", "орша", "мозырь", "солигорск",
+                "новополоцк", "лида", "молодечно", "полоцк", "слоним", "кобрин",
+                "волковыск", "калинковичи", "светлогорск", "речица", "жлобин",
+                "слуцк", "лепель", "климовичи", "рогачев", "чаусы", "чашники"
+            ]
+            
+            last_arg_lower = args_list[-1].lower()
+            # Check if last argument is a known city
+            if last_arg_lower in known_cities or any(city in last_arg_lower for city in known_cities):
+                # Last argument is a city
+                profession = " ".join(args_list[:-1])
+                city = args_list[-1]
+            else:
+                # Last argument is part of profession (e.g., "подсобный рабочий")
+                profession = " ".join(args_list)
+                city = None
         else:
             # Single argument - profession only
             profession = args_list[0]
@@ -273,8 +289,8 @@ async def show_search_results_batch(
     # Format message with batch info
     total_batches = (len(vacancies) + VACANCIES_PER_PAGE - 1) // VACANCIES_PER_PAGE
     message_text = (
-        f"📋 <b>Вакансии {start_idx + 1}-{end_idx} из {total_vacancies}</b>\n"
-        f"📊 <b>Всего доступно: {total_vacancies} вакансий</b>\n"
+        f"📊 <b>Найдено: {total_vacancies} вакансий</b>\n"
+        f"📋 Показано: {start_idx + 1}-{end_idx} из {total_vacancies}\n"
         f"📄 Загружено: {len(vacancies)} из {total_vacancies}\n\n"
     )
     
@@ -328,12 +344,26 @@ async def show_search_results_batch(
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
-    if message:
-        await message.edit_text(message_text, parse_mode="HTML", reply_markup=reply_markup)
-    else:
-        await update.callback_query.edit_message_text(
-            message_text, parse_mode="HTML", reply_markup=reply_markup
-        )
+    try:
+        if message:
+            await message.edit_text(message_text, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            query = update.callback_query
+            if query:
+                await query.edit_message_text(
+                    message_text, parse_mode="HTML", reply_markup=reply_markup
+                )
+    except Exception as e:
+        # Handle "Message is not modified" error gracefully
+        error_str = str(e).lower()
+        if "not modified" in error_str or "message is not modified" in error_str:
+            logger.debug("Message not modified - content is the same, ignoring")
+            # Just answer the callback query
+            if update.callback_query:
+                await update.callback_query.answer()
+        else:
+            logger.error(f"Error updating message: {e}", exc_info=True)
+            raise
 
 
 async def load_more_vacancies(
@@ -343,37 +373,92 @@ async def load_more_vacancies(
     message=None,
 ) -> None:
     """Load more vacancies for the current search."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
     search_params = context.user_data.get(SEARCH_PARAMS_KEY)
     if not search_params:
-        await update.callback_query.edit_message_text(
-            "❌ Параметры поиска не найдены. Начните новый поиск."
-        )
+        if query:
+            await query.edit_message_text(
+                "❌ Параметры поиска не найдены. Начните новый поиск."
+            )
         return
 
     # Show loading message
-    if message:
-        await message.edit_text("⏳ Загружаю следующие вакансии...")
-    else:
-        await update.callback_query.edit_message_text("⏳ Загружаю следующие вакансии...")
+    loading_text = "⏳ Загружаю следующие вакансии..."
+    try:
+        if message:
+            await message.edit_text(loading_text)
+        elif query:
+            await query.edit_message_text(loading_text)
+    except Exception as e:
+        logger.debug(f"Could not update loading message: {e}")
 
     try:
         parsed_pages = context.user_data.get("parsed_pages", 1)
         current_vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
         
-        # Parse next page
+        # Parse next page (page = parsed_pages + 1)
+        next_page = parsed_pages + 1
+        
+        # Build URL for next page manually to parse only that page
         async with GszParser() as parser:
-            next_page_vacancies = await parser.parse_vacancies(
+            # Parse only the next page
+            url = parser.build_search_url(
                 profession=search_params["profession"],
                 city=search_params["city"],
                 company_name=search_params["company_name"],
-                limit=VACANCIES_PER_PAGE,
+                page=next_page,
             )
+            
+            html = await parser._fetch_page(url)
+            if not html:
+                if query:
+                    await query.edit_message_text(
+                        "✅ Все доступные вакансии загружены."
+                    )
+                return
+            
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            vacancy_items = soup.find_all("div", class_="job-block")
+            
+            if len(vacancy_items) == 0:
+                if query:
+                    await query.edit_message_text(
+                        "✅ Все доступные вакансии загружены."
+                    )
+                return
+            
+            # Parse vacancies from this page
+            next_page_vacancies = []
+            for item in vacancy_items:
+                vacancy = await parser._parse_vacancy_item(item)
+                if vacancy:
+                    # Apply city filter if needed
+                    if search_params.get("city") and search_params["city"]:
+                        address = vacancy.get("company_address", "").lower()
+                        city_lower = search_params["city"].lower()
+                        # Skip if city filter doesn't match (but only if city is a real city)
+                        if len(city_lower) >= 4 and city_lower not in address:
+                            # Check city variations
+                            city_variations = [
+                                city_lower,
+                                f"г. {city_lower}",
+                                f"г {city_lower}",
+                            ]
+                            matches = any(var in address for var in city_variations)
+                            if not matches:
+                                continue
+                    
+                    next_page_vacancies.append(vacancy)
         
         if not next_page_vacancies:
-            # No more vacancies
-            await update.callback_query.edit_message_text(
-                "✅ Все доступные вакансии загружены."
-            )
+            if query:
+                await query.edit_message_text(
+                    "✅ Все доступные вакансии загружены."
+                )
             return
         
         # Save to database
@@ -397,9 +482,13 @@ async def load_more_vacancies(
         
     except Exception as e:
         logger.error(f"Error loading more vacancies: {e}", exc_info=True)
-        await update.callback_query.edit_message_text(
-            "❌ Ошибка при загрузке вакансий. Попробуйте позже."
-        )
+        if query:
+            try:
+                await query.edit_message_text(
+                    "❌ Ошибка при загрузке вакансий. Попробуйте позже."
+                )
+            except Exception:
+                pass
 
 
 async def load_all_vacancies(

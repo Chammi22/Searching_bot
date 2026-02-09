@@ -608,9 +608,16 @@ class GszParser(BaseParser):
                 max_pages_to_try = 1000  # Very high limit, will stop earlier on empty pages
                 self.logger.info("Parsing all pages (monitoring mode)")
             else:
-                # For search: reasonable limit based on total_pages or default
-                max_pages_to_try = max(total_pages, 10) if total_pages > 0 else 10
-                self.logger.info(f"Parsing up to {max_pages_to_try} pages (search mode)")
+                # For search: parse only first page if limit is set (for fast initial display)
+                # Otherwise parse up to reasonable number of pages
+                if limit and limit <= 20:
+                    # For initial search display, parse only first page
+                    max_pages_to_try = 1
+                    self.logger.info(f"Parsing first page only (search mode, limit={limit})")
+                else:
+                    # For larger limits, parse multiple pages
+                    max_pages_to_try = max(total_pages, 10) if total_pages > 0 else 10
+                    self.logger.info(f"Parsing up to {max_pages_to_try} pages (search mode)")
             
             consecutive_empty_pages = 0
             
@@ -675,42 +682,46 @@ class GszParser(BaseParser):
                             address = vacancy.get("company_address", "").lower()
                             city_lower = city.lower()
                             
-                            # Check if city name appears in address
-                            # Handle variations: "Минск", "г. Минск", "Минская область", etc.
-                            city_variations = [
-                                city_lower,
-                                f"г. {city_lower}",
-                                f"г {city_lower}",
-                                f"{city_lower}ая",
-                                f"{city_lower}ская",
-                            ]
-                            
-                            # Also check common city name variations
-                            city_mapping = {
-                                "минск": ["минск", "г. минск", "г минск", "минская"],
-                                "могилев": ["могилев", "г. могилев", "могилевская"],
-                                "гомель": ["гомель", "г. гомель", "гомельская"],
-                                "брест": ["брест", "г. брест", "брестская"],
-                                "гродно": ["гродно", "г. гродно", "гродненская"],
-                                "витебск": ["витебск", "г. витебск", "витебская"],
-                            }
-                            
-                            if city_lower in city_mapping:
-                                city_variations.extend(city_mapping[city_lower])
-                            
-                            # Check if any variation matches
-                            # Use word boundaries to avoid partial matches
-                            matches = False
-                            for variation in city_variations:
-                                # Check if variation appears in address (as whole word or part of word)
-                                if variation in address:
-                                    matches = True
-                                    break
-                            
-                            if not matches:
-                                # Skip this vacancy - doesn't match city filter
-                                self.logger.debug(f"Skipping vacancy - city '{city}' not found in address '{address}'")
-                                continue
+                            # Skip filtering if city is too short or looks like part of profession
+                            # (e.g., "рабочий" is not a city)
+                            if len(city_lower) < 4:
+                                self.logger.debug(f"Skipping city filter - '{city}' is too short, likely part of profession")
+                            else:
+                                # Check if city name appears in address
+                                # Handle variations: "Минск", "г. Минск", "Минская область", etc.
+                                city_variations = [
+                                    city_lower,
+                                    f"г. {city_lower}",
+                                    f"г {city_lower}",
+                                    f"{city_lower}ая",
+                                    f"{city_lower}ская",
+                                ]
+                                
+                                # Also check common city name variations
+                                city_mapping = {
+                                    "минск": ["минск", "г. минск", "г минск", "минская"],
+                                    "могилев": ["могилев", "г. могилев", "могилевская"],
+                                    "гомель": ["гомель", "г. гомель", "гомельская"],
+                                    "брест": ["брест", "г. брест", "брестская"],
+                                    "гродно": ["гродно", "г. гродно", "гродненская"],
+                                    "витебск": ["витебск", "г. витебск", "витебская"],
+                                }
+                                
+                                if city_lower in city_mapping:
+                                    city_variations.extend(city_mapping[city_lower])
+                                
+                                # Check if any variation matches
+                                matches = False
+                                for variation in city_variations:
+                                    # Check if variation appears in address (as whole word or part of word)
+                                    if variation in address:
+                                        matches = True
+                                        break
+                                
+                                if not matches:
+                                    # Skip this vacancy - doesn't match city filter
+                                    self.logger.debug(f"Skipping vacancy - city '{city}' not found in address '{address}'")
+                                    continue
                         
                         # Filter by company name if specified
                         if company_name:
