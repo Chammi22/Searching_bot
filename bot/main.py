@@ -1,5 +1,6 @@
 """Main entry point for the bot."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from config.logging_config import setup_logging, get_logger
 from config.settings import settings
 from database.base import init_db
 from bot.application import BotApplication
+from bot.health_server import start_health_server
 
 logger = get_logger(__name__)
 
@@ -29,6 +31,12 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
+
+    # Start health check server for App Platform
+    # DigitalOcean App Platform uses PORT environment variable
+    port = int(os.getenv("PORT", os.getenv("HEALTH_CHECK_PORT", "8080")))
+    start_health_server(port)
+    logger.info(f"Health check server started on port {port}")
 
     # Create and run bot
     try:
