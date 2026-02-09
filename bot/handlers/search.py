@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 # Store search results in context for pagination
 SEARCH_RESULTS_KEY = "search_results"
 CURRENT_PAGE_KEY = "current_page"
+SEARCH_PARAMS_KEY = "search_params"  # Store search parameters for lazy loading
+VACANCIES_PER_PAGE = 20  # Show 20 vacancies per page
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -177,13 +179,24 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.debug(f"Could not update progress message: {e}")
 
     try:
-        # Parse vacancies using parser
+        # First, get exact total count of vacancies from the page
         async with GszParser() as parser:
+            total_vacancies = await parser.get_total_vacancies_count(profession, city, company_name)
+            
+            # If exact count not found, estimate from pages
+            if total_vacancies is None:
+                total_pages = await parser.get_total_pages(profession, city, company_name)
+                total_vacancies = total_pages * 20  # ~20 vacancies per page
+                logger.info(f"Estimated total vacancies: {total_vacancies} (from {total_pages} pages)")
+            else:
+                logger.info(f"Found exact total vacancies count: {total_vacancies}")
+            
+            # Parse first batch of vacancies (first page to show immediately)
             vacancies = await parser.parse_vacancies(
                 profession=profession,
                 city=city,
                 company_name=company_name,
-                limit=200,  # Increased limit for better results
+                limit=VACANCIES_PER_PAGE,  # Parse first 20 for immediate display
                 progress_callback=update_progress,
             )
 
@@ -195,13 +208,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return
 
-        # Update final progress
-        await loading_msg.edit_text(
-            f"✅ Найдено <b>{len(vacancies)}</b> вакансий\n"
-            "💾 Сохраняю в базу данных...",
-            parse_mode="HTML",
-        )
-
+        # Save search parameters for lazy loading more pages
+        context.user_data[SEARCH_PARAMS_KEY] = {
+            "profession": profession,
+            "city": city,
+            "company_name": company_name,
+        }
+        
         # Save vacancies to database
         db = next(get_db())
         vacancy_repo = VacancyRepository(db)
@@ -219,9 +232,11 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Store results in context for pagination
         context.user_data[SEARCH_RESULTS_KEY] = vacancies
         context.user_data[CURRENT_PAGE_KEY] = 0
+        context.user_data["total_vacancies"] = total_vacancies  # Exact or estimated count
+        context.user_data["parsed_pages"] = 1  # Track how many pages we've parsed
 
-        # Show first result
-        await show_search_results(update, context, page=0, message=loading_msg)
+        # Show first batch of 20 vacancies
+        await show_search_results_batch(update, context, batch=0, message=loading_msg)
 
     except Exception as e:
         logger.error(f"Error searching vacancies: {e}", exc_info=True)
@@ -231,60 +246,85 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
 
 
-async def show_search_results(
+async def show_search_results_batch(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    page: int = 0,
+    batch: int = 0,
     message=None,
 ) -> None:
-    """Show search results with pagination."""
+    """Show search results in batches of 20 vacancies."""
     vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
     if not vacancies:
         return
 
-    total_pages = len(vacancies)
-    if page >= total_pages:
-        page = total_pages - 1
-    if page < 0:
-        page = 0
+    total_vacancies = context.user_data.get("total_vacancies", len(vacancies))
+    parsed_pages = context.user_data.get("parsed_pages", 1)
+    
+    # Calculate batch range
+    start_idx = batch * VACANCIES_PER_PAGE
+    end_idx = min(start_idx + VACANCIES_PER_PAGE, len(vacancies))
+    batch_vacancies = vacancies[start_idx:end_idx]
+    
+    if not batch_vacancies:
+        # Need to load more vacancies
+        await load_more_vacancies(update, context, batch, message)
+        return
 
-    vacancy = vacancies[page]
-    context.user_data[CURRENT_PAGE_KEY] = page
-
-    # Format message
+    # Format message with batch info
+    total_batches = (len(vacancies) + VACANCIES_PER_PAGE - 1) // VACANCIES_PER_PAGE
     message_text = (
-        f"📋 <b>Результат {page + 1} из {total_pages}</b>\n\n"
-        + format_vacancy_message(vacancy)
+        f"📋 <b>Вакансии {start_idx + 1}-{end_idx} из {total_vacancies}</b>\n"
+        f"📊 <b>Всего доступно: {total_vacancies} вакансий</b>\n"
+        f"📄 Загружено: {len(vacancies)} из {total_vacancies}\n\n"
     )
+    
+    # Show up to 20 vacancies in compact format
+    for i, vacancy in enumerate(batch_vacancies[:20], start=start_idx + 1):
+        position = vacancy.get("position", "Не указано")
+        company = vacancy.get("company_name", "Не указано")
+        address = vacancy.get("company_address", "")
+        salary = vacancy.get("salary", "")
+        
+        message_text += f"<b>{i}. {position}</b>\n"
+        message_text += f"🏢 {company}\n"
+        if address:
+            message_text += f"📍 {address}\n"
+        if salary:
+            message_text += f"💰 {salary}\n"
+        message_text += "\n"
 
     # Create pagination keyboard
     keyboard = []
     nav_buttons = []
 
-    if page > 0:
+    if batch > 0:
         nav_buttons.append(
-            InlineKeyboardButton("◀️ Назад", callback_data=f"search_page:{page-1}")
+            InlineKeyboardButton("◀️ Предыдущие 20", callback_data=f"search_batch:{batch-1}")
         )
 
     nav_buttons.append(
-        InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop")
+        InlineKeyboardButton(f"Страница {batch + 1}", callback_data="noop")
     )
 
-    if page < total_pages - 1:
+    # Check if we have more vacancies or can load more
+    has_more = end_idx < len(vacancies) or len(vacancies) < total_vacancies
+    if has_more:
         nav_buttons.append(
-            InlineKeyboardButton("Вперед ▶️", callback_data=f"search_page:{page+1}")
+            InlineKeyboardButton("Следующие 20 ▶️", callback_data=f"search_batch:{batch+1}")
         )
 
     if nav_buttons:
         keyboard.append(nav_buttons)
-
-    # Add action buttons
-    action_buttons = []
-    if vacancy.get("url"):
-        action_buttons.append(
-            InlineKeyboardButton("🔗 Открыть вакансию", url=vacancy["url"])
-        )
-    keyboard.append(action_buttons)
+    
+    # Add button to load all remaining vacancies
+    if len(vacancies) < total_vacancies:
+        remaining = total_vacancies - len(vacancies)
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📥 Загрузить все ({remaining} осталось)",
+                callback_data="search_load_all"
+            )
+        ])
 
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
@@ -296,19 +336,160 @@ async def show_search_results(
         )
 
 
-async def search_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle pagination callback for search results."""
+async def load_more_vacancies(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    batch: int,
+    message=None,
+) -> None:
+    """Load more vacancies for the current search."""
+    search_params = context.user_data.get(SEARCH_PARAMS_KEY)
+    if not search_params:
+        await update.callback_query.edit_message_text(
+            "❌ Параметры поиска не найдены. Начните новый поиск."
+        )
+        return
+
+    # Show loading message
+    if message:
+        await message.edit_text("⏳ Загружаю следующие вакансии...")
+    else:
+        await update.callback_query.edit_message_text("⏳ Загружаю следующие вакансии...")
+
+    try:
+        parsed_pages = context.user_data.get("parsed_pages", 1)
+        current_vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
+        
+        # Parse next page
+        async with GszParser() as parser:
+            next_page_vacancies = await parser.parse_vacancies(
+                profession=search_params["profession"],
+                city=search_params["city"],
+                company_name=search_params["company_name"],
+                limit=VACANCIES_PER_PAGE,
+            )
+        
+        if not next_page_vacancies:
+            # No more vacancies
+            await update.callback_query.edit_message_text(
+                "✅ Все доступные вакансии загружены."
+            )
+            return
+        
+        # Save to database
+        db = next(get_db())
+        vacancy_repo = VacancyRepository(db)
+        
+        for vacancy_data in next_page_vacancies:
+            existing = vacancy_repo.get_by_external_id_and_source(
+                vacancy_data["external_id"], vacancy_data["source"]
+            )
+            if not existing:
+                vacancy_repo.create(vacancy_data)
+        
+        # Add to existing vacancies
+        current_vacancies.extend(next_page_vacancies)
+        context.user_data[SEARCH_RESULTS_KEY] = current_vacancies
+        context.user_data["parsed_pages"] = parsed_pages + 1
+        
+        # Show the batch
+        await show_search_results_batch(update, context, batch=batch)
+        
+    except Exception as e:
+        logger.error(f"Error loading more vacancies: {e}", exc_info=True)
+        await update.callback_query.edit_message_text(
+            "❌ Ошибка при загрузке вакансий. Попробуйте позже."
+        )
+
+
+async def load_all_vacancies(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Load all remaining vacancies."""
+    search_params = context.user_data.get(SEARCH_PARAMS_KEY)
+    if not search_params:
+        await update.callback_query.edit_message_text(
+            "❌ Параметры поиска не найдены."
+        )
+        return
+
+    await update.callback_query.edit_message_text(
+        "⏳ Загружаю все оставшиеся вакансии...\n"
+        "Это может занять некоторое время."
+    )
+
+    try:
+        current_vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
+        parsed_pages = context.user_data.get("parsed_pages", 1)
+        
+        # Progress callback
+        async def update_progress(current_page: int, total_pages: int, found_count: int) -> None:
+            try:
+                await update.callback_query.edit_message_text(
+                    f"⏳ Загружаю все вакансии...\n"
+                    f"📄 Страница: {current_page}\n"
+                    f"📊 Найдено: {found_count} вакансий"
+                )
+            except:
+                pass
+        
+        # Parse all remaining pages
+        async with GszParser() as parser:
+            all_vacancies = await parser.parse_vacancies(
+                profession=search_params["profession"],
+                city=search_params["city"],
+                company_name=search_params["company_name"],
+                limit=None,  # No limit - get all
+                progress_callback=update_progress,
+            )
+        
+        # Save to database
+        db = next(get_db())
+        vacancy_repo = VacancyRepository(db)
+        
+        for vacancy_data in all_vacancies:
+            existing = vacancy_repo.get_by_external_id_and_source(
+                vacancy_data["external_id"], vacancy_data["source"]
+            )
+            if not existing:
+                vacancy_repo.create(vacancy_data)
+        
+        # Update context
+        context.user_data[SEARCH_RESULTS_KEY] = all_vacancies
+        # Keep original total count if it exists, otherwise use parsed count
+        original_total = context.user_data.get("total_vacancies")
+        if original_total:
+            context.user_data["total_vacancies"] = max(original_total, len(all_vacancies))
+        else:
+            context.user_data["total_vacancies"] = len(all_vacancies)
+        context.user_data["parsed_pages"] = 999  # Mark as fully parsed
+        
+        # Show first batch
+        await show_search_results_batch(update, context, batch=0)
+        
+    except Exception as e:
+        logger.error(f"Error loading all vacancies: {e}", exc_info=True)
+        await update.callback_query.edit_message_text(
+            "❌ Ошибка при загрузке всех вакансий. Попробуйте позже."
+        )
+
+
+async def search_batch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle batch pagination callback for search results."""
     query = update.callback_query
     await query.answer()
 
-    # Extract page number from callback data
+    # Extract batch number from callback data
     callback_data = query.data
     if callback_data == "noop":
         return
     
-    if callback_data.startswith("search_page:"):
-        page = int(callback_data.split(":")[1])
-        await show_search_results(update, context, page=page)
+    if callback_data.startswith("search_batch:"):
+        batch = int(callback_data.split(":")[1])
+        await show_search_results_batch(update, context, batch=batch)
+    elif callback_data == "search_load_all":
+        await load_all_vacancies(update, context)
 
 
 async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -388,13 +569,24 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
             except Exception as e:
                 logger.debug(f"Could not update progress message: {e}")
 
-        # Parse vacancies using parser
+        # First, get exact total count of vacancies from the page
         async with GszParser() as parser:
+            total_vacancies = await parser.get_total_vacancies_count(profession, city, company_name)
+            
+            # If exact count not found, estimate from pages
+            if total_vacancies is None:
+                total_pages = await parser.get_total_pages(profession, city, company_name)
+                total_vacancies = total_pages * 20  # ~20 vacancies per page
+                logger.info(f"Estimated total vacancies: {total_vacancies} (from {total_pages} pages)")
+            else:
+                logger.info(f"Found exact total vacancies count: {total_vacancies}")
+            
+            # Parse first batch of vacancies (first page to show immediately)
             vacancies = await parser.parse_vacancies(
                 profession=profession,
                 city=city,
                 company_name=company_name,
-                limit=200,  # Increased limit for better results
+                limit=VACANCIES_PER_PAGE,  # Parse first 20 for immediate display
                 progress_callback=update_progress,
             )
 
@@ -406,12 +598,12 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
 
-        # Update final progress
-        await loading_msg.edit_text(
-            f"✅ Найдено <b>{len(vacancies)}</b> вакансий\n"
-            "💾 Сохраняю в базу данных...",
-            parse_mode="HTML",
-        )
+        # Save search parameters for lazy loading more pages
+        context.user_data[SEARCH_PARAMS_KEY] = {
+            "profession": profession,
+            "city": city,
+            "company_name": company_name,
+        }
 
         # Save vacancies to database
         vacancy_repo = VacancyRepository(db)
@@ -428,9 +620,11 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
         # Store results in context for pagination
         context.user_data[SEARCH_RESULTS_KEY] = vacancies
         context.user_data[CURRENT_PAGE_KEY] = 0
+        context.user_data["total_vacancies"] = total_vacancies  # Exact or estimated count
+        context.user_data["parsed_pages"] = 1
 
-        # Show first result
-        await show_search_results(update, context, page=0, message=loading_msg)
+        # Show first batch of 20 vacancies
+        await show_search_results_batch(update, context, batch=0, message=loading_msg)
 
     except Exception as e:
         logger.error(f"Error in search_filter_callback: {e}", exc_info=True)
@@ -457,6 +651,6 @@ async def search_manual_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 # Handlers
 search_handler = CommandHandler("search", search_command)
-search_page_handler = CallbackQueryHandler(search_page_callback, pattern="^search_page:")
+search_page_handler = CallbackQueryHandler(search_batch_callback, pattern="^search_batch:|^search_load_all$")
 search_filter_handler = CallbackQueryHandler(search_filter_callback, pattern="^search_filter:")
 search_manual_handler = CallbackQueryHandler(search_manual_callback, pattern="^search_manual$")

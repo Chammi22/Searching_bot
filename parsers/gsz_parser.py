@@ -207,6 +207,72 @@ class GszParser(BaseParser):
             return f"{base_search_url}?{'&'.join(params)}"
         return base_search_url
 
+    async def get_total_vacancies_count(
+        self,
+        profession: Optional[str] = None,
+        city: Optional[str] = None,
+        company_name: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Get total number of vacancies from search results page.
+        
+        Looks for text like "Количество заявленных вакансий: 4442"
+
+        Args:
+            profession: Profession/specialty
+            city: City or region
+            company_name: Company name
+
+        Returns:
+            Total number of vacancies or None if not found
+        """
+        url = self.build_search_url(profession, city, company_name, page=1)
+        html = await self._fetch_page(url)
+        if not html:
+            return None
+
+        try:
+            import re
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Look for text containing "Количество заявленных вакансий" or similar
+            # Patterns to search for:
+            patterns = [
+                r"Количество заявленных вакансий:\s*(\d+)",
+                r"Количество вакансий:\s*(\d+)",
+                r"Найдено вакансий:\s*(\d+)",
+                r"Всего вакансий:\s*(\d+)",
+                r"вакансий[:\s]+(\d+)",
+            ]
+            
+            # Search in all text content
+            page_text = soup.get_text()
+            
+            for pattern in patterns:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    count = int(match.group(1))
+                    self.logger.info(f"Found total vacancies count: {count}")
+                    return count
+            
+            # Also try to find in specific elements
+            # Look for elements containing "Количество" and "вакансий"
+            for elem in soup.find_all(string=re.compile(r"Количество.*вакансий", re.IGNORECASE)):
+                text = str(elem)
+                for pattern in patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        count = int(match.group(1))
+                        self.logger.info(f"Found total vacancies count in element: {count}")
+                        return count
+            
+            self.logger.warning("Could not find total vacancies count on page")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing total vacancies count: {e}", exc_info=True)
+            return None
+
     async def get_total_pages(
         self,
         profession: Optional[str] = None,
