@@ -3,7 +3,14 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+from config.logging_config import get_logger
 from config.settings import settings
+
+logger = get_logger(__name__)
+
+# Ensure database directory exists
+db_path = settings.get_database_path()
+logger.info(f"Database path: {db_path}")
 
 # Create engine
 engine = create_engine(

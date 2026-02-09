@@ -1,5 +1,7 @@
 """Application settings using Pydantic."""
 
+import os
+from pathlib import Path
 from typing import List
 
 from pydantic import Field
@@ -19,7 +21,28 @@ class Settings(BaseSettings):
     bot_token: str = Field(..., alias="BOT_TOKEN")
 
     # Database
-    database_url: str = Field(default="sqlite:///./vacancies.db", alias="DATABASE_URL")
+    # IMPORTANT: For DigitalOcean App Platform, set DATABASE_URL environment variable to:
+    # sqlite:////tmp/data/vacancies.db (use 4 slashes for absolute path)
+    # The /tmp directory persists between deployments in App Platform
+    # For local development, default is: sqlite:///./vacancies.db
+    database_url: str = Field(
+        default="sqlite:///./vacancies.db",
+        alias="DATABASE_URL"
+    )
+    
+    def get_database_path(self) -> str:
+        """Get database file path, ensuring directory exists."""
+        # Parse database URL
+        if self.database_url.startswith("sqlite:///"):
+            db_path = self.database_url.replace("sqlite:///", "")
+        else:
+            db_path = "./vacancies.db"
+        
+        # Ensure directory exists
+        db_dir = Path(db_path).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+        
+        return db_path
 
     # Logging
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

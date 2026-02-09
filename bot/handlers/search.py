@@ -1,5 +1,6 @@
 """Search command handler."""
 
+import asyncio
 import time
 from typing import Optional
 
@@ -164,10 +165,18 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         """Update progress message."""
         nonlocal last_progress_update
         
-        # Update progress every page or every 3 seconds
+        # Update progress more frequently for better UX
+        # Always update on first page (page 0) to show initial progress immediately
         current_time = time.time()
-        if current_time - last_progress_update < 3 and current_page > 0:
-            return  # Skip if updated recently
+        time_since_last = current_time - last_progress_update
+        
+        # Update immediately on first page, then every 1 second minimum
+        if current_page == 0:
+            # First page - update immediately
+            pass
+        elif time_since_last < 1.0:
+            # Too soon since last update
+            return
         
         last_progress_update = current_time
         
@@ -177,22 +186,28 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             progress_pct = 0
         
-        # Create progress bar
-        bar_length = 10
+        # Create progress bar with more visual elements
+        bar_length = 12
         filled = int(bar_length * progress_pct / 100)
         bar = "█" * filled + "░" * (bar_length - filled)
         
+        # Add spinner animation based on page number
+        spinner = ["⏳", "🔍", "📋", "🔎"][current_page % 4]
+        
         progress_text = (
-            f"⏳ <b>Ищу вакансии...</b>\n\n"
-            f"📄 Страница: {current_page}/{total_pages if total_pages > 0 else '?'}\n"
-            f"📊 Найдено: {found_count} вакансий\n"
-            f"📈 Прогресс: [{bar}] {progress_pct}%"
+            f"{spinner} <b>Ищу вакансии...</b>\n\n"
+            f"📄 Обработано страниц: {current_page}/{total_pages if total_pages > 0 else '?'}\n"
+            f"📊 Найдено вакансий: {found_count}\n"
+            f"📈 Прогресс: [{bar}] {progress_pct}%\n\n"
+            f"<i>Пожалуйста, подождите...</i>"
         )
         
         try:
             await loading_msg.edit_text(progress_text, parse_mode="HTML")
         except Exception as e:
-            logger.debug(f"Could not update progress message: {e}")
+            error_str = str(e).lower()
+            if "not modified" not in error_str:
+                logger.debug(f"Could not update progress message: {e}")
 
     try:
         # First, get exact total count of vacancies from the page
@@ -250,6 +265,15 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data[CURRENT_PAGE_KEY] = 0
         context.user_data["total_vacancies"] = total_vacancies  # Exact or estimated count
         context.user_data["parsed_pages"] = 1  # Track how many pages we've parsed
+
+        # Show final message briefly before showing results
+        final_text = (
+            f"✅ <b>Найдено: {total_vacancies} вакансий</b>\n"
+            f"📋 Загружено: {len(vacancies)} вакансий\n"
+            "💾 Сохраняю в базу данных..."
+        )
+        await loading_msg.edit_text(final_text, parse_mode="HTML")
+        await asyncio.sleep(0.8)  # Show final message for 0.8 seconds
 
         # Show first batch of 20 vacancies
         await show_search_results_batch(update, context, batch=0, message=loading_msg)
