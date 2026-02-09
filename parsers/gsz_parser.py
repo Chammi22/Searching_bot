@@ -492,6 +492,7 @@ class GszParser(BaseParser):
         fetch_details: bool = False,
         filter_by_city: bool = True,
         progress_callback: Optional[Callable[[int, int, int], Awaitable[None]]] = None,
+        parse_all_pages: bool = False,
     ) -> list[dict]:
         """
         Parse vacancies from gsz.gov.by.
@@ -506,6 +507,8 @@ class GszParser(BaseParser):
             filter_by_city: Whether to filter results by city
             progress_callback: Optional callback function(current_page, total_pages, found_count)
                               called after parsing each page for progress updates
+            parse_all_pages: If True, parse all pages until no more results (for monitoring).
+                            If False, limit to reasonable number of pages (for search).
 
         Returns:
             List of vacancy dictionaries
@@ -532,8 +535,17 @@ class GszParser(BaseParser):
                 await progress_callback(0, total_pages, 0)
 
             # Parse each page
-            # If total_pages is estimated (e.g., 10), continue until no more results
-            max_pages_to_try = max(total_pages, 20)  # Try up to 20 pages max
+            # For monitoring (parse_all_pages=True): parse all pages until no more results
+            # For search (parse_all_pages=False): limit to reasonable number of pages
+            if parse_all_pages:
+                # For monitoring: parse all pages, stop only when no more results
+                max_pages_to_try = 1000  # Very high limit, will stop earlier on empty pages
+                self.logger.info("Parsing all pages (monitoring mode)")
+            else:
+                # For search: reasonable limit based on total_pages or default
+                max_pages_to_try = max(total_pages, 10) if total_pages > 0 else 10
+                self.logger.info(f"Parsing up to {max_pages_to_try} pages (search mode)")
+            
             consecutive_empty_pages = 0
             
             for page in range(1, max_pages_to_try + 1):

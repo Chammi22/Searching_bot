@@ -156,23 +156,25 @@ class MonitoringService:
             )
 
             # Parse vacancies using filter parameters
+            # For monitoring, parse ALL pages to catch all new vacancies
             async with GszParser() as parser:
                 vacancies = await parser.parse_vacancies(
                     profession=filter_obj.profession,
                     city=filter_obj.city,
                     company_name=filter_obj.company_name,
-                    limit=200,  # Increased limit to catch all new vacancies
+                    limit=None,  # No limit for monitoring - parse all vacancies
                     fetch_details=False,
                     filter_by_city=True,
+                    parse_all_pages=True,  # Parse all pages for monitoring
                 )
 
-            # Find new vacancies that appeared AFTER task creation or last check
-            # Use last_check if available, otherwise use task.created_at
-            reference_date = task.last_check if task.last_check else task.created_at
+            # Find new vacancies that are not yet in database
+            # For monitoring, we consider a vacancy "new" if it doesn't exist in database
+            # (by external_id + source), regardless of date_posted
+            # This ensures we catch all vacancies that appeared since monitoring started
             
             new_vacancies = []
             skipped_existing = 0
-            skipped_old = 0
             
             for vacancy_data in vacancies:
                 # Check if vacancy already exists in database
@@ -181,42 +183,23 @@ class MonitoringService:
                 )
                 
                 if existing:
-                    # Vacancy already in database - skip
+                    # Vacancy already in database - skip (already processed)
                     skipped_existing += 1
                     continue
                 
-                # Check if vacancy was posted AFTER reference date (task creation or last check)
-                vacancy_date = vacancy_data.get("date_posted")
-                if vacancy_date:
-                    if vacancy_date < reference_date:
-                        # Vacancy was posted before reference date - skip
-                        skipped_old += 1
-                        logger.debug(
-                            f"Skipping vacancy {vacancy_data.get('external_id')} - "
-                            f"posted {vacancy_date} before reference {reference_date}"
-                        )
-                        continue
-                else:
-                    # If date_posted is None, we can't determine if it's new
-                    # For safety, we'll include it but log a warning
-                    logger.warning(
-                        f"Vacancy {vacancy_data.get('external_id')} has no date_posted, "
-                        "including it as potentially new"
-                    )
-                
-                # This is a new vacancy posted after reference date
+                # This is a new vacancy (not in database yet)
                 # Save it to database
                 saved_vacancy = vacancy_repo.create(vacancy_data)
                 new_vacancies.append(saved_vacancy)
                 logger.info(
                     f"Found new vacancy: {vacancy_data.get('position')} "
                     f"at {vacancy_data.get('company_name')} "
-                    f"(posted: {vacancy_date}, reference: {reference_date})"
+                    f"(external_id: {vacancy_data.get('external_id')})"
                 )
             
             logger.info(
                 f"Task {task_id} check complete: "
-                f"{len(new_vacancies)} new, {skipped_existing} existing, {skipped_old} old"
+                f"{len(new_vacancies)} new vacancies found, {skipped_existing} already in database"
             )
 
             # Update last check time
