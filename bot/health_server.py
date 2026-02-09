@@ -45,13 +45,15 @@ def run_health_server(port: int = 8080) -> HTTPServer:
 
 # Global server instance
 _health_server: Optional[HTTPServer] = None
+_health_server_started = False
 
 
 def start_health_server(port: int = 8080) -> None:
     """Start health check server."""
-    global _health_server
-    if _health_server is None:
+    global _health_server, _health_server_started
+    if _health_server is None and not _health_server_started:
         _health_server = run_health_server(port)
+        _health_server_started = True
 
 
 def stop_health_server() -> None:

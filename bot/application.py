@@ -92,4 +92,22 @@ class BotApplication:
         logger.info("Starting bot application...")
         self.app.post_init = self.post_init
         self.app.post_shutdown = self.post_shutdown
-        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+        try:
+            self.app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,  # Drop pending updates to avoid conflicts
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            if "conflict" in error_str or "409" in error_str:
+                logger.error(
+                    "Bot conflict detected: Another bot instance is running. "
+                    "Please stop all other instances and restart."
+                )
+                logger.error(
+                    "To fix this:\n"
+                    "1. Stop all running bot instances\n"
+                    "2. Wait a few seconds\n"
+                    "3. Restart the bot"
+                )
+            raise
