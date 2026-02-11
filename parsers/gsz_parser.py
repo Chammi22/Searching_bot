@@ -327,10 +327,9 @@ class GszParser(BaseParser):
                             max_page = max(max_page, page_num)
                         
                         # Also check href for page numbers
-                            href = link.get("href", "")
-                            if href:
-                                # Look for page= parameter
-                                match = re.search(r'[?&]page=(\d+)', href)
+                        href = link.get("href", "")
+                        if href:
+                            match = re.search(r'[?&]page=(\d+)', href)
                             if match:
                                 page_num = int(match.group(1))
                                 max_page = max(max_page, page_num)
@@ -614,7 +613,7 @@ class GszParser(BaseParser):
             # Get total pages
             total_pages = await self.get_total_pages(profession, city, company_name)
             self.logger.info(f"Found {total_pages} page(s)")
-            
+
             # Call progress callback for initial state
             if progress_callback:
                 await progress_callback(0, total_pages, 0)
@@ -661,6 +660,9 @@ class GszParser(BaseParser):
 
                 # Find vacancy items - actual structure: div.job-block
                 vacancy_items = soup.find_all("div", class_="job-block")
+                # Also try class with multiple values (e.g. "col-12 job-block")
+                if len(vacancy_items) == 0:
+                    vacancy_items = soup.find_all("div", class_=lambda c: c and "job-block" in c)
                 
                 # Also try alternative selectors if job-block not found
                 if len(vacancy_items) == 0:

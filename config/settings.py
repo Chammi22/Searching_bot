@@ -21,10 +21,9 @@ class Settings(BaseSettings):
     bot_token: str = Field(..., alias="BOT_TOKEN")
 
     # Database
-    # IMPORTANT: For DigitalOcean App Platform, set DATABASE_URL environment variable to:
-    # sqlite:////tmp/data/vacancies.db (use 4 slashes for absolute path)
+    # IMPORTANT: For DigitalOcean App Platform, set DATABASE_URL environment variable
+    # to use persistent storage: sqlite:////tmp/data/vacancies.db
     # The /tmp directory persists between deployments in App Platform
-    # For local development, default is: sqlite:///./vacancies.db
     database_url: str = Field(
         default="sqlite:///./vacancies.db",
         alias="DATABASE_URL"

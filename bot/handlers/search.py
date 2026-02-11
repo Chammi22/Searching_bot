@@ -90,9 +90,11 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             db_user = user_repo.get_by_telegram_id(user.id)
             if not db_user:
-                await update.message.reply_text(
-                    "❌ Вы не зарегистрированы. Используйте /start для регистрации."
-                )
+                msg = update.effective_message
+                if msg:
+                    await msg.reply_text(
+                        "❌ Вы не зарегистрированы. Используйте /start для регистрации."
+                    )
                 return
 
             # Get user's active filters
@@ -131,32 +133,42 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     ]
                 )
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(message, parse_mode="HTML", reply_markup=reply_markup)
+                msg = update.effective_message
+                if msg:
+                    await msg.reply_text(message, parse_mode="HTML", reply_markup=reply_markup)
             else:
                 # No filters - ask for manual input
-                await update.message.reply_text(
-                    "🔍 <b>Поиск вакансий</b>\n\n"
-                    "Используйте команду так:\n"
-                    "<code>/search подсобный рабочий</code> - поиск по профессии\n"
-                    "<code>/search подсобный рабочий Минск</code> - поиск по профессии и городу\n"
-                    "<code>/search плотник в Могилев</code> - поиск с предлогом \"в\"\n\n"
-                    "💡 <b>Совет:</b> Создайте фильтр через /add_filter для быстрого доступа к часто используемым поискам.",
-                    parse_mode="HTML",
-                )
+                msg = update.effective_message
+                if msg:
+                    await msg.reply_text(
+                        "🔍 <b>Поиск вакансий</b>\n\n"
+                        "Используйте команду так:\n"
+                        "<code>/search подсобный рабочий</code> - поиск по профессии\n"
+                        "<code>/search подсобный рабочий Минск</code> - поиск по профессии и городу\n"
+                        "<code>/search плотник в Могилев</code> - поиск с предлогом \"в\"\n\n"
+                        "💡 <b>Совет:</b> Создайте фильтр через /add_filter для быстрого доступа к часто используемым поискам.",
+                        parse_mode="HTML",
+                    )
             return
         except Exception as e:
             logger.error(f"Error in search_command: {e}", exc_info=True)
-            await update.message.reply_text(
-                "🔍 <b>Поиск вакансий</b>\n\n"
-                "Используйте команду так:\n"
-                "<code>/search подсобный рабочий</code> - поиск по профессии\n"
-                "<code>/search подсобный рабочий Минск</code> - поиск по профессии и городу",
-                parse_mode="HTML",
-            )
+            msg = update.effective_message
+            if msg:
+                await msg.reply_text(
+                    "🔍 <b>Поиск вакансий</b>\n\n"
+                    "Используйте команду так:\n"
+                    "<code>/search подсобный рабочий</code> - поиск по профессии\n"
+                    "<code>/search подсобный рабочий Минск</code> - поиск по профессии и городу",
+                    parse_mode="HTML",
+                )
             return
 
     # Show loading message
-    loading_msg = await update.message.reply_text("⏳ Ищу вакансии...")
+    msg = update.effective_message
+    if not msg:
+        logger.warning("search_command: no effective_message, cannot send loading")
+        return
+    loading_msg = await msg.reply_text("⏳ Ищу вакансии...")
 
     # Progress tracking
     last_progress_update = 0
