@@ -234,12 +234,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 logger.info(f"Found exact total vacancies count: {total_vacancies}")
             
-            # Parse first batch of vacancies (first page to show immediately)
+            # Parse vacancies (fetch_details=True для точного "Количество мест")
             vacancies = await parser.parse_vacancies(
                 profession=profession,
                 city=city,
                 company_name=company_name,
-                limit=VACANCIES_PER_PAGE,  # Parse first 20 for immediate display
+                limit=VACANCIES_PER_PAGE,
+                fetch_details=True,
                 progress_callback=update_progress,
             )
 
@@ -721,7 +722,8 @@ async def search_filter_callback(update: Update, context: ContextTypes.DEFAULT_T
                 profession=profession,
                 city=city,
                 company_name=company_name,
-                limit=VACANCIES_PER_PAGE,  # Parse first 20 for immediate display
+                limit=VACANCIES_PER_PAGE,
+                fetch_details=True,
                 progress_callback=update_progress,
             )
 

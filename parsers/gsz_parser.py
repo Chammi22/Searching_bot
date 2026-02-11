@@ -423,9 +423,11 @@ class GszParser(BaseParser):
                                     if fio_col:
                                         detail_data["contact_person"] = self.normalize_text(fio_col.get_text(strip=True))
 
-            # Extract vacancies count from detail page (may be more accurate than listing)
+            # Extract vacancies count from detail page
+            # "Количество мест" = real vacant positions (500), "Ставка" = rate/FTE (1) — берём первое
             page_text = soup.get_text()
             for pattern in [
+                r"Количество мест[:\s]*(\d+)",
                 r"Количество вакантных мест[:\s]*(\d+)",
                 r"Вакантных мест[:\s]*(\d+)",
                 r"Ставка[:\s]*(\d+)",
@@ -497,15 +499,15 @@ class GszParser(BaseParser):
             if address_elem:
                 address = self.normalize_text(address_elem.text)
 
-            # Extract vacancies count - try multiple patterns (whole item)
-            # "Ставка: X" = positions, "Количество вакантных мест: X" = vacant positions
+            # Extract vacancies count - на листинге обычно только "Ставка: 1"
+            # Точное "Количество мест" есть только на детальной странице (fetch_details=True)
             vacancies_count = None
             item_text = item.get_text()
             patterns = [
+                r"Количество мест[:\s]*(\d+)",
                 r"Количество вакантных мест[:\s]*(\d+)",
                 r"Вакантных мест[:\s]*(\d+)",
                 r"Кол-во мест[:\s]*(\d+)",
-                r"Количество ставок[:\s]*(\d+)",
                 r"Ставка[:\s]*(\d+)",
             ]
             for pattern in patterns:
@@ -758,12 +760,10 @@ class GszParser(BaseParser):
                                 self.logger.debug(f"Skipping vacancy - company '{company_name}' not found in '{company}'")
                                 continue
                         
-                        # Try to get contact info from detail page if enabled and URL is available
+                        # Try to get contact info and vacancies_count from detail page if enabled
                         if fetch_details and vacancy.get("url") and detail_fetch_errors < max_detail_errors:
-                            # Wait for rate limiter before detail request
                             await self.rate_limiter.wait()
-                            # Additional delay for detail pages (they're more expensive)
-                            await asyncio.sleep(1.0 + random.uniform(0, 0.5))  # 1-1.5s delay
+                            await asyncio.sleep(0.4 + random.uniform(0, 0.3))  # 0.4-0.7s delay
                             
                             detail_data = await self.parse_vacancy_detail(vacancy["url"])
                             if detail_data:
