@@ -1,6 +1,6 @@
 """Database base configuration."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from config.logging_config import get_logger
@@ -16,8 +16,10 @@ if database_url.startswith("postgres://"):
 if "sqlite" in database_url:
     db_path = settings.get_database_path()
     logger.info(f"Database path: {db_path}")
+    SCHEMA = None
 else:
     logger.info("Database: PostgreSQL (persistent)")
+    SCHEMA = "app"  # Своя схема — обходим "permission denied for schema public" (PostgreSQL 15+)
 
 engine = create_engine(
     database_url,
@@ -37,8 +39,13 @@ class Base(DeclarativeBase):
 
 def init_db() -> None:
     """Initialize database - create all tables."""
-    # Import models to ensure they are registered with Base
     from database.models import User, Vacancy, Filter, MonitoringTask  # noqa: F401
-    
-    # Create all tables
+
+    if SCHEMA:
+        # PostgreSQL 15+: своя схема — обходим "permission denied for schema public"
+        with engine.begin() as conn:
+            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"'))
+        for table in Base.metadata.tables.values():
+            table.schema = SCHEMA
+
     Base.metadata.create_all(bind=engine)
