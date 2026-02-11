@@ -8,15 +8,21 @@ from config.settings import settings
 
 logger = get_logger(__name__)
 
-# Ensure database directory exists
-db_path = settings.get_database_path()
-logger.info(f"Database path: {db_path}")
+# Database URL (PostgreSQL для облака, SQLite локально)
+database_url = settings.database_url
+if database_url.startswith("postgres://"):
+    database_url = "postgresql://" + database_url[9:]  # Heroku/DO дают postgres://
 
-# Create engine
+if "sqlite" in database_url:
+    db_path = settings.get_database_path()
+    logger.info(f"Database path: {db_path}")
+else:
+    logger.info("Database: PostgreSQL (persistent)")
+
 engine = create_engine(
-    settings.database_url,
-    echo=False,  # Set to True for SQL query logging
-    connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
+    database_url,
+    echo=False,
+    connect_args={"check_same_thread": False} if "sqlite" in database_url else {},
 )
 
 # Create session factory

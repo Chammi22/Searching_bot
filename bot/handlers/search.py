@@ -441,60 +441,72 @@ async def load_more_vacancies(
     try:
         parsed_pages = context.user_data.get("parsed_pages", 1)
         current_vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
+        seen_ids = {v.get("external_id") for v in current_vacancies}
         
-        # Parse next page (page = parsed_pages + 1)
-        next_page = parsed_pages + 1
+        target_new_count = VACANCIES_PER_PAGE  # Загружаем пока не наберём 20 новых
+        next_page_vacancies = []
+        next_page = parsed_pages
         
-        # Build URL for next page manually to parse only that page
+        from bs4 import BeautifulSoup
+        
         async with GszParser() as parser:
-            # Parse only the next page
-            url = parser.build_search_url(
-                profession=search_params["profession"],
-                city=search_params["city"],
-                company_name=search_params["company_name"],
-                page=next_page,
-            )
-            
-            html = await parser._fetch_page(url)
-            if not html:
-                if query:
-                    await query.edit_message_text(
-                        "✅ Все доступные вакансии загружены."
-                    )
-                return
-            
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(html, "html.parser")
-            vacancy_items = soup.find_all("div", class_="job-block")
-            
-            if len(vacancy_items) == 0:
-                if query:
-                    await query.edit_message_text(
-                        "✅ Все доступные вакансии загружены."
-                    )
-                return
-            
-            # Parse vacancies from this page
-            next_page_vacancies = []
-            for item in vacancy_items:
-                vacancy = await parser._parse_vacancy_item(item)
-                if vacancy:
-                    # Apply city filter if needed
+            while len(next_page_vacancies) < target_new_count:
+                next_page += 1
+                if next_page > parsed_pages + 1:
+                    await asyncio.sleep(2)  # Задержка между страницами
+                url = parser.build_search_url(
+                    profession=search_params["profession"],
+                    city=search_params["city"],
+                    company_name=search_params["company_name"],
+                    page=next_page,
+                )
+                
+                html = await parser._fetch_page(url)
+                if not html:
+                    break
+                
+                soup = BeautifulSoup(html, "html.parser")
+                vacancy_items = soup.find_all("div", class_="job-block")
+                if not vacancy_items:
+                    vacancy_items = soup.find_all("div", class_=lambda c: c and "job-block" in c)
+                
+                if len(vacancy_items) == 0:
+                    break
+                
+                for item in vacancy_items:
+                    if len(next_page_vacancies) >= target_new_count:
+                        break
+                    vacancy = await parser._parse_vacancy_item(item)
+                    if not vacancy or vacancy.get("external_id") in seen_ids:
+                        continue
+                    # City filter (тот же, что в parser)
                     if search_params.get("city") and search_params["city"]:
                         address = vacancy.get("company_address", "").lower()
                         city_lower = search_params["city"].lower()
-                        # Skip if city filter doesn't match (but only if city is a real city)
-                        if len(city_lower) >= 4 and city_lower not in address:
-                            # Check city variations
+                        if len(city_lower) >= 4:
                             city_variations = [
-                                city_lower,
-                                f"г. {city_lower}",
-                                f"г {city_lower}",
+                                city_lower, f"г. {city_lower}", f"г {city_lower}",
+                                f"{city_lower}ая", f"{city_lower}ская",
                             ]
-                            matches = any(var in address for var in city_variations)
-                            if not matches:
+                            city_mapping = {
+                                "минск": ["минск", "г. минск", "г минск", "минская"],
+                                "могилев": ["могилев", "г. могилев", "могилевская"],
+                                "гомель": ["гомель", "г. гомель", "гомельская"],
+                                "брест": ["брест", "г. брест", "брестская"],
+                                "гродно": ["гродно", "г. гродно", "гродненская"],
+                                "витебск": ["витебск", "г. витебск", "витебская"],
+                            }
+                            if city_lower in city_mapping:
+                                city_variations.extend(city_mapping[city_lower])
+                            if not any(v in address for v in city_variations):
                                 continue
                     
+                    seen_ids.add(vacancy.get("external_id"))
+                    if vacancy.get("url"):
+                        await asyncio.sleep(0.5)
+                        detail_data = await parser.parse_vacancy_detail(vacancy["url"])
+                        if detail_data and detail_data.get("vacancies_count") is not None:
+                            vacancy["vacancies_count"] = detail_data["vacancies_count"]
                     next_page_vacancies.append(vacancy)
         
         if not next_page_vacancies:
@@ -515,16 +527,11 @@ async def load_more_vacancies(
             if not existing:
                 vacancy_repo.create(vacancy_data)
         
-        # Add to existing vacancies (deduplicate by external_id)
-        seen_ids = {v.get("external_id") for v in current_vacancies}
         for v in next_page_vacancies:
-            if v.get("external_id") not in seen_ids:
-                current_vacancies.append(v)
-                seen_ids.add(v.get("external_id"))
+            current_vacancies.append(v)
         context.user_data[SEARCH_RESULTS_KEY] = current_vacancies
-        context.user_data["parsed_pages"] = parsed_pages + 1
+        context.user_data["parsed_pages"] = next_page
         
-        # Show the batch
         await show_search_results_batch(update, context, batch=batch)
         
     except Exception as e:
@@ -570,13 +577,14 @@ async def load_all_vacancies(
             except:
                 pass
         
-        # Parse all remaining pages
+        # Parse all remaining pages (fetch_details=True для точного Количество мест)
         async with GszParser() as parser:
             all_vacancies = await parser.parse_vacancies(
                 profession=search_params["profession"],
                 city=search_params["city"],
                 company_name=search_params["company_name"],
-                limit=None,  # No limit - get all
+                limit=None,
+                fetch_details=True,
                 progress_callback=update_progress,
             )
         
