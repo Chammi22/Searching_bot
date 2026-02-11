@@ -324,6 +324,8 @@ async def show_search_results_batch(
         company = vacancy.get("company_name", "Не указано")
         address = vacancy.get("company_address", "")
         salary = vacancy.get("salary", "")
+        vacancies_count = vacancy.get("vacancies_count")
+        url = vacancy.get("url", "")
         
         message_text += f"<b>{i}. {position}</b>\n"
         message_text += f"🏢 {company}\n"
@@ -331,6 +333,10 @@ async def show_search_results_batch(
             message_text += f"📍 {address}\n"
         if salary:
             message_text += f"💰 {salary}\n"
+        if vacancies_count is not None and vacancies_count > 0:
+            message_text += f"👥 <b>Вакантных мест:</b> {vacancies_count}\n"
+        if url:
+            message_text += f"🔗 <a href='{url}'>Открыть на сайте</a>\n"
         message_text += "\n"
 
     # Create pagination keyboard
@@ -496,8 +502,12 @@ async def load_more_vacancies(
             if not existing:
                 vacancy_repo.create(vacancy_data)
         
-        # Add to existing vacancies
-        current_vacancies.extend(next_page_vacancies)
+        # Add to existing vacancies (deduplicate by external_id)
+        seen_ids = {v.get("external_id") for v in current_vacancies}
+        for v in next_page_vacancies:
+            if v.get("external_id") not in seen_ids:
+                current_vacancies.append(v)
+                seen_ids.add(v.get("external_id"))
         context.user_data[SEARCH_RESULTS_KEY] = current_vacancies
         context.user_data["parsed_pages"] = parsed_pages + 1
         

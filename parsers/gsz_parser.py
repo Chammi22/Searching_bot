@@ -1,6 +1,7 @@
 """Parser for gsz.gov.by website."""
 
 import asyncio
+import re
 import random
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
@@ -232,7 +233,6 @@ class GszParser(BaseParser):
             return None
 
         try:
-            import re
             soup = BeautifulSoup(html, "html.parser")
             
             # Look for text containing "Количество заявленных вакансий" or similar
@@ -327,11 +327,10 @@ class GszParser(BaseParser):
                             max_page = max(max_page, page_num)
                         
                         # Also check href for page numbers
-                        href = link.get("href", "")
-                        if href:
-                            # Look for page= parameter
-                            import re
-                            match = re.search(r'[?&]page=(\d+)', href)
+                            href = link.get("href", "")
+                            if href:
+                                # Look for page= parameter
+                                match = re.search(r'[?&]page=(\d+)', href)
                             if match:
                                 page_num = int(match.group(1))
                                 max_page = max(max_page, page_num)
@@ -425,6 +424,20 @@ class GszParser(BaseParser):
                                     if fio_col:
                                         detail_data["contact_person"] = self.normalize_text(fio_col.get_text(strip=True))
 
+            # Extract vacancies count from detail page (may be more accurate than listing)
+            page_text = soup.get_text()
+            for pattern in [
+                r"Количество вакантных мест[:\s]*(\d+)",
+                r"Вакантных мест[:\s]*(\d+)",
+                r"Ставка[:\s]*(\d+)",
+            ]:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    count = int(match.group(1))
+                    if count > 0:
+                        detail_data["vacancies_count"] = count
+                        break
+
             return detail_data
 
         except Exception as e:
@@ -442,7 +455,6 @@ class GszParser(BaseParser):
             Dictionary with vacancy data or None if parsing failed
         """
         try:
-            import re
             from datetime import timedelta
 
             # Extract position (profession) from h4.job-title > a
@@ -486,17 +498,23 @@ class GszParser(BaseParser):
             if address_elem:
                 address = self.normalize_text(address_elem.text)
 
-            # Extract vacancies count (Ставка: X)
+            # Extract vacancies count - try multiple patterns (whole item)
+            # "Ставка: X" = positions, "Количество вакантных мест: X" = vacant positions
             vacancies_count = None
-            job_info = item.find("ul", class_="job-info")
-            if job_info:
-                # Look for text containing "Ставка:"
-                for elem in job_info.find_all(["li", "span"]):
-                    text = elem.get_text(strip=True)
-                    if "Ставка:" in text:
-                        match = re.search(r"Ставка:\s*(\d+)", text)
-                        if match:
-                            vacancies_count = int(match.group(1))
+            item_text = item.get_text()
+            patterns = [
+                r"Количество вакантных мест[:\s]*(\d+)",
+                r"Вакантных мест[:\s]*(\d+)",
+                r"Кол-во мест[:\s]*(\d+)",
+                r"Количество ставок[:\s]*(\d+)",
+                r"Ставка[:\s]*(\d+)",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, item_text, re.IGNORECASE)
+                if match:
+                    count = int(match.group(1))
+                    if count > 0:
+                        vacancies_count = count
                         break
 
             # Extract date (Обновлено X часов/дней назад)
@@ -588,6 +606,7 @@ class GszParser(BaseParser):
             self.logger.info(f"City filtering enabled: will filter results by '{city}'")
 
         vacancies = []
+        seen_external_ids: set[str] = set()  # Deduplicate by external_id
         detail_fetch_errors = 0
         max_detail_errors = 5  # Stop fetching details after 5 consecutive errors
         
@@ -723,6 +742,13 @@ class GszParser(BaseParser):
                                     self.logger.debug(f"Skipping vacancy - city '{city}' not found in address '{address}'")
                                     continue
                         
+                        # Skip duplicates (same external_id)
+                        ext_id = vacancy.get("external_id", "")
+                        if ext_id in seen_external_ids:
+                            self.logger.debug(f"Skipping duplicate vacancy external_id={ext_id}")
+                            continue
+                        seen_external_ids.add(ext_id)
+                        
                         # Filter by company name if specified
                         if company_name:
                             company = vacancy.get("company_name", "").lower()
@@ -743,6 +769,8 @@ class GszParser(BaseParser):
                                     vacancy["contact_phone"] = detail_data["contact_phone"]
                                 if detail_data.get("contact_person"):
                                     vacancy["contact_person"] = detail_data["contact_person"]
+                                if detail_data.get("vacancies_count") is not None:
+                                    vacancy["vacancies_count"] = detail_data["vacancies_count"]
                                 # Reset error counter on success
                                 detail_fetch_errors = 0
                             else:
