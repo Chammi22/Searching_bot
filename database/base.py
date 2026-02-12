@@ -1,6 +1,6 @@
 """Database base configuration."""
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from config.logging_config import get_logger
@@ -8,18 +8,19 @@ from config.settings import settings
 
 logger = get_logger(__name__)
 
-# Database URL (PostgreSQL для облака, SQLite локально)
-database_url = settings.database_url
-if database_url.startswith("postgres://"):
-    database_url = "postgresql://" + database_url[9:]  # Heroku/DO дают postgres://
-
-if "sqlite" in database_url:
-    db_path = settings.get_database_path()
-    logger.info(f"Database path: {db_path}")
-    SCHEMA = None
+# USE_SQLITE=1 — временно использовать SQLite (данные теряются при деплое, но приложение запускается)
+if settings.use_sqlite:
+    database_url = "sqlite:///./vacancies.db"
+    settings.get_database_path()  # создать директорию если нужно
+    logger.info("Database: SQLite (USE_SQLITE=1)")
 else:
-    logger.info("Database: PostgreSQL (persistent)")
-    SCHEMA = "app"  # Своя схема — обходим "permission denied for schema public" (PostgreSQL 15+)
+    database_url = settings.database_url
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[9:]
+    if "sqlite" in database_url:
+        logger.info(f"Database path: {settings.get_database_path()}")
+    else:
+        logger.info("Database: PostgreSQL (persistent)")
 
 engine = create_engine(
     database_url,
@@ -40,12 +41,5 @@ class Base(DeclarativeBase):
 def init_db() -> None:
     """Initialize database - create all tables."""
     from database.models import User, Vacancy, Filter, MonitoringTask  # noqa: F401
-
-    if SCHEMA:
-        # PostgreSQL 15+: своя схема — обходим "permission denied for schema public"
-        with engine.begin() as conn:
-            conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"'))
-        for table in Base.metadata.tables.values():
-            table.schema = SCHEMA
 
     Base.metadata.create_all(bind=engine)

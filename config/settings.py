@@ -21,13 +21,13 @@ class Settings(BaseSettings):
     bot_token: str = Field(..., alias="BOT_TOKEN")
 
     # Database
-    # IMPORTANT: For DigitalOcean App Platform, set DATABASE_URL environment variable
-    # to use persistent storage: sqlite:////tmp/data/vacancies.db
-    # The /tmp directory persists between deployments in App Platform
+    # Локально: sqlite:///./vacancies.db
+    # Временно: USE_SQLITE=1 — использовать SQLite даже если есть DATABASE_URL (для деплоя пока не настроен PostgreSQL)
     database_url: str = Field(
         default="sqlite:///./vacancies.db",
         alias="DATABASE_URL"
     )
+    use_sqlite: bool = Field(default=False, alias="USE_SQLITE")  # Установите 1 чтобы принудительно использовать SQLite
     
     def get_database_path(self) -> str:
         """Get database file path, ensuring directory exists."""

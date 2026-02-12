@@ -23,9 +23,38 @@ DigitalOcean автоматически добавит переменную `DAT
 
 Закоммитьте и запушьте изменения — приложение пересоберётся и подключится к PostgreSQL.
 
-## Шаг 4: Проверка
+## Временный обход: USE_SQLITE=1
 
-После деплоя в логах при запуске должно появиться:
+Пока PostgreSQL не настроен — добавьте в **App** → **Environment Variables**:
+- **Key:** `USE_SQLITE`
+- **Value:** `1`
+
+Приложение будет использовать SQLite и запустится. Данные будут теряться при каждом деплое. Когда настроите PostgreSQL и выполните GRANT — удалите `USE_SQLITE`.
+
+---
+
+## Шаг 4: Выдать права (PostgreSQL 15+)
+
+При ошибке `permission denied for schema public` нужно один раз выполнить SQL:
+
+1. **DigitalOcean App Platform:**  
+   App → Settings → Database → **Connection** → откройте консоль или подключитесь через psql.
+
+2. **Heroku:** в терминале: `heroku pg:psql -a имя-вашего-приложения`
+
+3. Узнайте имя пользователя из `DATABASE_URL` (в строке `postgresql://USER:password@host/...`).
+
+4. Выполните (замените `YOUR_DB_USER` на имя пользователя, например `doadmin` или `u123abc`):
+   ```sql
+   GRANT USAGE ON SCHEMA public TO YOUR_DB_USER;
+   GRANT CREATE ON SCHEMA public TO YOUR_DB_USER;
+   ```
+
+5. Перезапустите приложение.
+
+## Шаг 5: Проверка
+
+После деплоя в логах должно появиться:
 ```
 Database: PostgreSQL (persistent)
 ```
