@@ -35,22 +35,30 @@ DigitalOcean автоматически добавит переменную `DAT
 
 ## Шаг 4: Выдать права (PostgreSQL 15+)
 
-При ошибке `permission denied for schema public` нужно один раз выполнить SQL:
+При ошибке `permission denied for schema public` нужно один раз выполнить GRANT.
 
-1. **DigitalOcean App Platform:**  
-   App → Settings → Database → **Connection** → откройте консоль или подключитесь через psql.
+### Dev Database (нет отдельного кластера в Databases)
 
-2. **Heroku:** в терминале: `heroku pg:psql -a имя-вашего-приложения`
+Подключение только от приложения. Используйте **консоль приложения**:
 
-3. Узнайте имя пользователя из `DATABASE_URL` (в строке `postgresql://USER:password@host/...`).
-
-4. Выполните (замените `YOUR_DB_USER` на имя пользователя, например `doadmin` или `u123abc`):
-   ```sql
-   GRANT USAGE ON SCHEMA public TO YOUR_DB_USER;
-   GRANT CREATE ON SCHEMA public TO YOUR_DB_USER;
+1. App → вкладка **Console** → выберите компонент (ваш сервис)
+2. В открывшемся shell выполните:
+   ```bash
+   cd /workspace
+   python scripts/grant_schema_from_app.py
    ```
+3. Удалите `USE_SQLITE=1` из переменных окружения и перезапустите приложение.
 
-5. Перезапустите приложение.
+### Managed Database (есть в Databases)
+
+1. Databases → кластер → **Connection Details**
+2. Добавьте свой IP в **Trusted Sources**
+3. Подключитесь через psql и выполните:
+   ```sql
+   GRANT USAGE ON SCHEMA public TO your_user;
+   GRANT CREATE ON SCHEMA public TO your_user;
+   ```
+4. Перезапустите приложение.
 
 ## Шаг 5: Проверка
 
