@@ -23,7 +23,12 @@ def main() -> None:
     setup_logging(settings.log_level)
     logger.info("Starting Telegram bot...")
 
-    # Initialize database
+    # Start health check server FIRST — App Platform проверяет порт до завершения init_db
+    port = int(os.getenv("PORT", os.getenv("HEALTH_CHECK_PORT", "8080")))
+    start_health_server(port)
+    logger.info(f"Health check server started on port {port}")
+
+    # Initialize database (может занять время — health уже отвечает)
     logger.info("Initializing database...")
     try:
         init_db()
@@ -31,12 +36,6 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
         raise
-
-    # Start health check server for App Platform
-    # DigitalOcean App Platform uses PORT environment variable
-    port = int(os.getenv("PORT", os.getenv("HEALTH_CHECK_PORT", "8080")))
-    start_health_server(port)
-    logger.info(f"Health check server started on port {port}")
 
     # Create and run bot
     try:
