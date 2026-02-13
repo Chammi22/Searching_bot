@@ -14,10 +14,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
             KeyboardButton("🔔 Мониторинг"),
             KeyboardButton("📊 Статистика"),
         ],
-        [
-            KeyboardButton("📥 Экспорт"),
-            KeyboardButton("ℹ️ Помощь"),
-        ],
+        [KeyboardButton("ℹ️ Помощь")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 

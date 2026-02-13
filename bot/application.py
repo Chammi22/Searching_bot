@@ -71,14 +71,6 @@ class BotApplication:
         self.app.add_handler(monitoring.monitor_list_callback_handler)
         self.app.add_handler(monitoring.monitor_start_callback_handler)
 
-        # Export handlers
-        from bot.handlers import export
-        self.app.add_handler(export.export_handler)
-        self.app.add_handler(export.export_all_handler)
-        self.app.add_handler(export.export_filter_handler)
-        self.app.add_handler(export.export_filter_id_handler)
-        self.app.add_handler(export.export_back_handler)
-
         # Stats handlers
         from bot.handlers import stats
         self.app.add_handler(stats.stats_handler)
