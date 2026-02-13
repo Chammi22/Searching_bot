@@ -628,12 +628,11 @@ class GszParser(BaseParser):
                 max_pages_to_try = 1000  # Very high limit, will stop earlier on empty pages
                 self.logger.info("Parsing all pages (monitoring mode)")
             else:
-                # For search: parse only first page if limit is set (for fast initial display)
-                # Otherwise parse up to reasonable number of pages
+                # For search: parse pages until we have enough (city filter may reduce count)
                 if limit and limit <= 20:
-                    # For initial search display, parse only first page
-                    max_pages_to_try = 1
-                    self.logger.info(f"Parsing first page only (search mode, limit={limit})")
+                    # Parse up to 10 pages to reach ~20 after city filter
+                    max_pages_to_try = min(max(total_pages or 1, 5), 10)
+                    self.logger.info(f"Parsing up to {max_pages_to_try} pages (search mode, limit={limit})")
                 else:
                     # For larger limits, parse multiple pages
                     max_pages_to_try = max(total_pages, 10) if total_pages > 0 else 10

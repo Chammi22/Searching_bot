@@ -82,9 +82,9 @@ class MonitoringService:
             self._task_jobs[task_id] = job_id
             logger.info(f"Started monitoring task {task_id} with interval {task.interval_hours} hours")
             
-            # Run first check immediately (don't wait for interval)
-            asyncio.create_task(self._check_new_vacancies(task_id))
-            logger.info(f"Running initial check for task {task_id} immediately")
+            # Run first check immediately — заполняем БД, но НЕ уведомляем (иначе 80+ сообщений)
+            asyncio.create_task(self._check_new_vacancies(task_id, skip_notifications=True))
+            logger.info(f"Running initial check for task {task_id} (no notifications)")
             
             return True
 
@@ -118,12 +118,13 @@ class MonitoringService:
             logger.error(f"Error stopping monitoring task {task_id}: {e}", exc_info=True)
             return False
 
-    async def _check_new_vacancies(self, task_id: int) -> None:
+    async def _check_new_vacancies(self, task_id: int, skip_notifications: bool = False) -> None:
         """
         Check for new vacancies for a monitoring task.
 
         Args:
             task_id: ID of the monitoring task
+            skip_notifications: If True, save to DB but don't send messages (for initial run)
         """
         try:
             db = next(get_db())
@@ -205,10 +206,13 @@ class MonitoringService:
             # Update last check time
             monitoring_repo.update_last_check(task_id)
 
-            # Send notifications for new vacancies
+            # Send notifications for new vacancies (пропускаем при первом запуске)
             if new_vacancies:
                 logger.info(f"Found {len(new_vacancies)} new vacancies for task {task_id}")
-                await self._send_notifications(task.user_id, new_vacancies, filter_obj.name)
+                if not skip_notifications:
+                    await self._send_notifications(task.user_id, new_vacancies, filter_obj.name)
+                else:
+                    logger.info(f"Skipping notifications (initial run)")
             else:
                 logger.info(f"No new vacancies found for task {task_id}")
 

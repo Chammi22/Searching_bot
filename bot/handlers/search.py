@@ -443,14 +443,15 @@ async def load_more_vacancies(
         current_vacancies = context.user_data.get(SEARCH_RESULTS_KEY, [])
         seen_ids = {v.get("external_id") for v in current_vacancies}
         
-        target_new_count = VACANCIES_PER_PAGE  # Загружаем пока не наберём 20 новых
+        # Нужно загрузить до (batch+1)*20 вакансий всего
+        required_total = (batch + 1) * VACANCIES_PER_PAGE
         next_page_vacancies = []
         next_page = parsed_pages
         
         from bs4 import BeautifulSoup
         
         async with GszParser() as parser:
-            while len(next_page_vacancies) < target_new_count:
+            while len(current_vacancies) + len(next_page_vacancies) < required_total:
                 next_page += 1
                 if next_page > parsed_pages + 1:
                     await asyncio.sleep(2)  # Задержка между страницами
@@ -474,7 +475,7 @@ async def load_more_vacancies(
                     break
                 
                 for item in vacancy_items:
-                    if len(next_page_vacancies) >= target_new_count:
+                    if len(current_vacancies) + len(next_page_vacancies) >= required_total:
                         break
                     vacancy = await parser._parse_vacancy_item(item)
                     if not vacancy or vacancy.get("external_id") in seen_ids:
