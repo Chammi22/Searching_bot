@@ -1,13 +1,27 @@
 """Main bot application."""
 
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder
+from telegram.ext import Application, ApplicationBuilder, CallbackContext
+from telegram.error import Conflict
 
 from config.logging_config import get_logger
 from config.settings import settings
 from services.monitoring_service import MonitoringService
 
 logger = get_logger(__name__)
+
+
+async def _error_handler(update: object, context: CallbackContext) -> None:
+    """Handle errors. Suppress noisy Conflict logs during deployment overlap."""
+    err = getattr(context, "error", None)
+    if err and isinstance(err, Conflict):
+        logger.warning(
+            "Telegram Conflict: another instance is polling. "
+            "Ensure App Platform has 1 instance. Retrying..."
+        )
+        return
+    if err:
+        logger.error("Handler error: %s", err, exc_info=err)
 
 
 class BotApplication:
@@ -72,8 +86,7 @@ class BotApplication:
 
     def _setup_middleware(self) -> None:
         """Setup middleware."""
-        # Middleware will be added here
-        pass
+        self.app.add_error_handler(_error_handler)
 
     async def post_init(self, application: Application) -> None:
         """Post initialization hook."""

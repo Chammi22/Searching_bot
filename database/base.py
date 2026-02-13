@@ -1,6 +1,6 @@
 """Database base configuration."""
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from config.logging_config import get_logger
@@ -43,3 +43,19 @@ def init_db() -> None:
     from database.models import User, Vacancy, Filter, MonitoringTask  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+    # Миграция: расширить contact_person и contact_phone для PostgreSQL (были varchar)
+    if "postgresql" in database_url:
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "ALTER TABLE vacancies ALTER COLUMN contact_person TYPE TEXT"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE vacancies ALTER COLUMN contact_phone TYPE TEXT"
+                ))
+                conn.commit()
+            logger.info("Migration: contact_person, contact_phone -> TEXT")
+        except Exception as e:
+            # Игнорируем если уже TEXT или таблица новая
+            logger.debug("Migration skip (already applied or new): %s", e)

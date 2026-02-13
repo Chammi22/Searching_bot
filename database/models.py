@@ -48,8 +48,8 @@ class Vacancy(Base):
     position: Mapped[str] = mapped_column(String(500), nullable=False)
     vacancies_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     salary: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    contact_person: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    contact_phone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    contact_person: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Может быть длинным (весь блок контактов)
+    contact_phone: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Может содержать доп. текст
     url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
