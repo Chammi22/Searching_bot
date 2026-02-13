@@ -51,13 +51,12 @@ class BotApplication:
         # Filter handlers
         self.app.add_handler(filters.filters_handler)
         self.app.add_handler(filters.add_filter_conv_handler)
+        self.app.add_handler(filters.edit_filter_conv_handler)
         self.app.add_handler(filters.filter_view_handler)
         self.app.add_handler(filters.filter_toggle_handler)
+        self.app.add_handler(filters.filter_delete_confirm_handler)
         self.app.add_handler(filters.filter_delete_handler)
         self.app.add_handler(filters.filter_list_handler)
-        # Add filter callback handler (must be before conversation handler)
-        from telegram.ext import CallbackQueryHandler
-        self.app.add_handler(CallbackQueryHandler(filters.add_filter_callback, pattern="^filter_add$"))
 
         # Monitoring handlers
         from bot.handlers import monitoring
